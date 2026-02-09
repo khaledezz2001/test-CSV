@@ -7,7 +7,7 @@ ENV TRANSFORMERS_CACHE=/models
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
 ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
-# System dependencies for OCR + PDFs
+# System deps for OCR + PDFs
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     libgl1 \
@@ -19,32 +19,21 @@ COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
 # ===============================
-# DOWNLOAD QWEN 2.5 14B (LOGGED)
+# DOWNLOAD QWEN 2.5 7B (SAFE SIZE)
 # ===============================
 RUN python3 -u <<'EOF'
-import sys
 from huggingface_hub import snapshot_download
 
-print("====================================", flush=True)
-print("STARTING QWEN 2.5 14B DOWNLOAD", flush=True)
-print("THIS MAY TAKE A WHILE", flush=True)
-print("====================================", flush=True)
+print("Downloading Qwen 2.5 7B...", flush=True)
 
-try:
-    snapshot_download(
-        repo_id="Qwen/Qwen2.5-14B-Instruct",
-        local_dir="/models/qwen",
-        local_dir_use_symlinks=False,
-        resume_download=True,
-        max_workers=1   # reduce RAM spikes
-    )
-except Exception as e:
-    print("DOWNLOAD FAILED:", e, flush=True)
-    sys.exit(1)
+snapshot_download(
+    repo_id="Qwen/Qwen2.5-7B-Instruct",
+    local_dir="/models/qwen",
+    local_dir_use_symlinks=False,
+    resume_download=True
+)
 
-print("====================================", flush=True)
-print("QWEN 14B DOWNLOAD FINISHED", flush=True)
-print("====================================", flush=True)
+print("Qwen 7B download complete", flush=True)
 EOF
 
 WORKDIR /app
