@@ -2,12 +2,13 @@ import runpod
 import torch
 import re
 import json
+import base64
 from pdf2image import convert_from_bytes
 from paddleocr import PaddleOCR
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # ======================================================
-# RTX 4090 CUDA OPTIMIZATION
+# RTX 4090 OPTIMIZATION
 # ======================================================
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -75,7 +76,7 @@ SYSTEM_PROMPT = """
 You extract bank transactions from OCR text.
 
 Return ONLY a JSON array.
-Each object must be exactly:
+Each object MUST be exactly:
 
 {
   "date": "YYYY-MM-DD",
@@ -86,8 +87,9 @@ Each object must be exactly:
 }
 
 Rules:
-- Use debit for negative amounts
-- Use credit for positive amounts
+- Negative amounts → debit
+- Positive amounts → credit
+- Use absolute values
 - Convert commas to decimal points
 - Do not invent data
 - Do not explain anything
@@ -149,7 +151,7 @@ def validate(tx):
 # ======================================================
 def handler(event):
     pdf_b64 = event["input"]["pdf_base64"]
-    pdf_bytes = bytes.fromhex(pdf_b64)
+    pdf_bytes = base64.b64decode(pdf_b64)
 
     lines = pdf_to_lines(pdf_bytes)
     rows = build_rows(lines)
@@ -159,7 +161,10 @@ def handler(event):
     try:
         parsed = json.loads(raw)
     except Exception:
-        return {"error": "LLM output not valid JSON", "raw": raw}
+        return {
+            "error": "LLM output is not valid JSON",
+            "raw_output": raw
+        }
 
     clean = []
     for tx in parsed:
