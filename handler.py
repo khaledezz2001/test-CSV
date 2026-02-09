@@ -15,7 +15,6 @@ def log(msg):
 # ===============================
 log("Starting worker")
 log(f"CUDA available: {torch.cuda.is_available()}")
-
 if torch.cuda.is_available():
     log(f"GPU: {torch.cuda.get_device_name(0)}")
 
@@ -24,15 +23,13 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
 
 # ===============================
-# LOAD MODEL
+# LOAD QWEN 2.5 7B
 # ===============================
-log("Loading tokenizer")
 tokenizer = AutoTokenizer.from_pretrained(
     "/models/qwen",
     trust_remote_code=True
 )
 
-log("Loading Qwen 2.5 14B model")
 model = AutoModelForCausalLM.from_pretrained(
     "/models/qwen",
     torch_dtype=torch.float16,
@@ -40,7 +37,7 @@ model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True
 )
 model.eval()
-log("Model loaded")
+log("Qwen 7B loaded")
 
 # ===============================
 # OCR
@@ -114,7 +111,7 @@ def llm_extract(rows):
     with torch.no_grad():
         output = model.generate(
             **inputs,
-            max_new_tokens=2000,
+            max_new_tokens=1500,
             do_sample=False
         )
 
@@ -127,8 +124,6 @@ def llm_extract(rows):
 # RUNPOD HANDLER
 # ===============================
 def handler(event):
-    log("Request received")
-
     pdf_b64 = event["input"]["pdf_base64"]
     pdf_bytes = base64.b64decode(pdf_b64)
 
