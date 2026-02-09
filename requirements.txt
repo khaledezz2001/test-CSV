@@ -1,11 +1,15 @@
-# OCR stack (NO PyMuPDF)
+# =========================
+# OCR (Python 3.11 SAFE)
+# =========================
 paddlepaddle==2.6.2
-paddleocr==2.7.0.3
+paddleocr==2.8.0
 numpy==1.26.4
 pdf2image==1.17.0
-pillow
+pillow==10.2.0
 
-# LLM + runtime
+# =========================
+# LLM + Runtime
+# =========================
 torch==2.4.0
 transformers==4.39.3
 accelerate==0.26.1
