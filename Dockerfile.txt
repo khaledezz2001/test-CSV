@@ -2,7 +2,7 @@ FROM runpod/pytorch:2.4.0-py3.10-cuda12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System deps for OCR + PDFs
+# System dependencies
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     libgl1 \
