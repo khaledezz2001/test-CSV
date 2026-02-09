@@ -1,8 +1,8 @@
-# OCR
+# OCR stack (NO PyMuPDF)
 paddlepaddle==2.6.2
 paddleocr==2.7.0.3
 numpy==1.26.4
-pdf2image
+pdf2image==1.17.0
 pillow
 
 # LLM + runtime
