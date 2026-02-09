@@ -1,11 +1,9 @@
-# OCR stack (LOCKED versions)
 paddlepaddle==2.6.2
 paddleocr==2.7.0.3
 numpy==1.26.4
 pdf2image
 pillow
 
-# LLM + runtime
 torch==2.4.0
 transformers==4.39.3
 accelerate==0.26.1
