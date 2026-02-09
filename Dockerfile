@@ -1,4 +1,4 @@
-FROM runpod/pytorch:2.4.0-py3.10-cuda12.4.1-devel-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.10-cuda12.1.0-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -16,16 +16,11 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
-# ===============================
-# DOWNLOAD QWEN 2.5 14B (LOGGED)
-# ===============================
 RUN python3 -u <<'EOF'
 import sys
 from huggingface_hub import snapshot_download
 
-print("====================================", flush=True)
 print("STARTING QWEN 2.5 14B DOWNLOAD", flush=True)
-print("====================================", flush=True)
 
 try:
     snapshot_download(
@@ -39,13 +34,10 @@ except Exception as e:
     print("DOWNLOAD FAILED:", e, flush=True)
     sys.exit(1)
 
-print("====================================", flush=True)
 print("QWEN 14B DOWNLOAD FINISHED", flush=True)
-print("====================================", flush=True)
 EOF
 
 WORKDIR /app
 COPY handler.py /app/handler.py
 
 CMD ["python3", "-u", "handler.py"]
-
