@@ -3,6 +3,7 @@ import torch
 import json
 import base64
 import io
+import gc
 from pdf2image import convert_from_bytes
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
@@ -15,20 +16,16 @@ def log(msg):
 # CONFIG & MODEL LOADING
 # ===============================
 MODEL_PATH = "/models/qwen"
+BATCH_SIZE = 1  # Process 1 page at a time to save VRAM
 
 log("Loading Qwen2-VL-7B...")
 
 try:
-    # Load Model
-    # Note: We remove explicit flash_attn to support a wider range of GPUs (T4, V100, etc.)
-    # If the user has Ampere+, it will still be fast.
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.float16,
         device_map="auto",
     )
-
-    # Load Processor
     processor = AutoProcessor.from_pretrained(MODEL_PATH)
     log("Qwen2-VL loaded successfully.")
 except Exception as e:
@@ -61,26 +58,11 @@ Rules:
 5. Detect the year from the statement context if not explicitly in the row.
 """
 
-def process_pdf(pdf_bytes):
-    # 1. Convert PDF to Images
-    try:
-        # Convert first 5 pages to avoid OOM if PDF is huge
-        images = convert_from_bytes(pdf_bytes, dpi=200) # 200 DPI is sufficient for Qwen2-VL
-        log(f"Converted PDF to {len(images)} images.")
-    except Exception as e:
-        log(f"Error converting PDF: {e}")
-        return json.dumps({"error": f"Failed to convert PDF: {str(e)}"})
-
-    if not images:
-        return json.dumps({"error": "No images extracted from PDF"})
-
-    # 2. Prepare Messages for VLM
+def process_batch(images):
+    # Prepare Messages for VLM
     content_blocks = []
     
-    # Add all images
-    for i, img in enumerate(images):
-        # Resize if image is massive (>2000px) to save tokens/VRAM
-        # Qwen2-VL handles variable resolution, but let's be safe
+    for img in images:
         if max(img.size) > 2000:
              img.thumbnail((2000, 2000))
         
@@ -89,7 +71,6 @@ def process_pdf(pdf_bytes):
             "image": img,
         })
     
-    # Add the text prompt
     content_blocks.append({
         "type": "text",
         "text": SYSTEM_PROMPT
@@ -102,7 +83,6 @@ def process_pdf(pdf_bytes):
         }
     ]
 
-    # 3. Preprocess Inputs
     try:
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
@@ -119,26 +99,15 @@ def process_pdf(pdf_bytes):
         )
         
         inputs = inputs.to(model.device)
-    except Exception as e:
-        log(f"Error processing inputs: {e}")
-        return json.dumps({"error": f"Input processing failed: {str(e)}"})
 
-    # 4. Generate
-    log("Running inference...")
-    try:
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=4096,
+                max_new_tokens=2048, # Reduce max tokens per batch slightly
                 do_sample=False, 
                 temperature=0.1 
             )
-    except Exception as e:
-         log(f"Inference error: {e}")
-         return json.dumps({"error": f"Inference failed: {str(e)}"})
 
-    # 5. Decode
-    try:
         generated_ids_trimmed = [
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
@@ -147,10 +116,52 @@ def process_pdf(pdf_bytes):
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
         
+        # Cleanup VRAM explicitly after each batch
+        del inputs, generated_ids, generated_ids_trimmed, image_inputs
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         return output_text
+        
     except Exception as e:
-        log(f"Decoding error: {e}")
-        return json.dumps({"error": f"Decoding failed: {str(e)}"})
+        log(f"Batch processing error: {e}")
+        return json.dumps({"error": f"Batch failed: {str(e)}"})
+
+
+def process_pdf(pdf_bytes):
+    # 1. Convert PDF to Images
+    try:
+        images = convert_from_bytes(pdf_bytes, dpi=200)
+        log(f"Converted PDF to {len(images)} images.")
+    except Exception as e:
+        log(f"Error converting PDF: {e}")
+        return json.dumps({"error": f"Failed to convert PDF: {str(e)}"})
+
+    if not images:
+        return json.dumps({"error": "No images extracted from PDF"})
+
+    all_transactions = []
+    
+    # Process in batches
+    for i in range(0, len(images), BATCH_SIZE):
+        batch = images[i:i + BATCH_SIZE]
+        log(f"Processing batch {i//BATCH_SIZE + 1}/{(len(images)+BATCH_SIZE-1)//BATCH_SIZE}...")
+        
+        raw_output = process_batch(batch)
+        
+        # Parse each batch result
+        try:
+            cleaned = raw_output.replace("```json", "").replace("```", "").strip()
+            batch_data = json.loads(cleaned)
+            if isinstance(batch_data, list):
+                all_transactions.extend(batch_data)
+            else:
+                 log(f"Warning: Batch returned non-list JSON: {batch_data}")
+        except json.JSONDecodeError:
+            log(f"Failed to parse JSON for batch {i}. Skipping.")
+            log(f"Raw output: {raw_output[:200]}...")
+            
+    return all_transactions
 
 # ===============================
 # RUNPOD HANDLER
@@ -173,18 +184,9 @@ def handler(event):
         return {"error": f"Invalid base64: {str(e)}"}
 
     # Run Inference
-    raw_output = process_pdf(pdf_bytes)
-    log(f"Raw Output: {raw_output[:100]}...")
+    final_data = process_pdf(pdf_bytes)
 
-    # Attempt to parse JSON
-    try:
-        # Clean up any potential markdown fences
-        cleaned_output = raw_output.replace("```json", "").replace("```", "").strip()
-        data = json.loads(cleaned_output)
-        return data
-    except json.JSONDecodeError:
-        log("Failed to parse JSON directly. Returning raw text.")
-        return {"raw_output": raw_output}
+    return final_data
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})
