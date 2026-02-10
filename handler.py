@@ -161,7 +161,20 @@ def process_pdf(pdf_bytes):
             log(f"Failed to parse JSON for batch {i}. Skipping.")
             log(f"Raw output: {raw_output[:200]}...")
             
-    return all_transactions
+    # Filter out ghost transactions (balance=0, credit=null, debit=null)
+    final_transactions = []
+    for t in all_transactions:
+        balance = t.get("balance")
+        credit = t.get("credit")
+        debit = t.get("debit")
+        
+        # Check if it's a ghost record
+        if (balance == 0 or balance == 0.0) and credit is None and debit is None:
+            continue
+            
+        final_transactions.append(t)
+            
+    return final_transactions
 
 # ===============================
 # RUNPOD HANDLER
