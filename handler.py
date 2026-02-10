@@ -49,13 +49,28 @@ DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
 def pdf_to_lines(pdf_bytes):
     images = convert_from_bytes(pdf_bytes, dpi=300)
     lines = []
-    for img in images:
-        result = ocr.ocr(np.array(img), cls=True)
+
+    for page_idx, img in enumerate(images):
+        img_np = np.array(img)
+
+        result = ocr.ocr(img_np, cls=True)
+
+        # 🔑 SAFETY: skip empty / failed OCR pages
+        if not result:
+            continue
+
         for block in result:
+            if not block:
+                continue
+
             for line in block:
-                txt = line[1][0].strip()
+                if not line or len(line) < 2:
+                    continue
+
+                txt = line[1][0]
                 if txt:
-                    lines.append(txt)
+                    lines.append(txt.strip())
+
     return lines
 
 def build_rows(lines):
@@ -74,14 +89,11 @@ def build_rows(lines):
 SYSTEM_PROMPT = """
 You are a financial transaction extraction engine.
 
-Your task is to extract bank transactions from OCR text.
-
 Return ONLY a valid JSON array.
 DO NOT use Markdown.
-DO NOT wrap the output in ```json or ``` blocks.
-DO NOT include explanations, comments, or extra text.
+DO NOT wrap the output in code blocks.
 
-Each transaction object MUST have exactly this schema:
+Schema:
 {
   "date": "YYYY-MM-DD",
   "description": string,
@@ -90,43 +102,37 @@ Each transaction object MUST have exactly this schema:
   "balance": number | null
 }
 
-STRICT RULES (MANDATORY):
+STRICT RULES (NO EXCEPTIONS):
 
-1. Ignore and DO NOT output any rows that represent:
+1. Preserve transaction order EXACTLY as it appears in the statement.
+   NEVER reorder transactions.
+
+2. Ignore rows that are not real transactions:
    - Balance brought forward
-   - Opening balance
-   - Closing balance
-   - Carried forward
-   - Totals or summaries
+   - Opening / closing balance
+   - Totals
 
-2. The transaction DATE column is authoritative.
-   - The date defines the year and month.
-   - NEVER infer or override the date from description text.
+3. Debit / credit determination:
+   - Fees, charges, commissions, maintenance costs → ALWAYS debit
+   - If the description contains words like:
+     "Fee", "Fees", "Charge", "Maintenance", "Commission"
+     then debit MUST be used and credit MUST be null.
+   - Do NOT infer credit unless the text explicitly indicates incoming funds.
 
-3. Description normalization:
-   - Remove billing period phrases such as:
-     "For June 2025", "For December 2024", "January 2024", etc.
-   - Remove months and years from descriptions.
-   - Keep only the transaction name, for example:
-     "IBU-Low Activity Fees"
-     "IBU-Maintenance Fees"
+4. Use absolute numeric values only.
 
-4. Debit and credit rules:
-   - Negative amounts → debit
-   - Positive amounts → credit
-   - Use absolute numeric values
-   - Exactly ONE of debit or credit must be non-null
+5. Description normalization:
+   - Remove any month or year references from descriptions
+   - Remove billing periods like "For June 2025", "December 2022"
+   - Keep only the transaction name.
 
-5. Balance:
-   - Use the running balance shown for that row if present
-   - Do NOT calculate or infer balances
-   - If missing, set balance to null
+6. Date:
+   - Use the transaction date column ONLY.
+   - Do not infer or override dates.
 
-6. Data integrity:
-   - Do NOT invent transactions
-   - Do NOT merge rows
-   - Do NOT reorder rows
-   - Preserve original statement order
+7. Balance:
+   - Use the balance shown for that row.
+   - Do not calculate balances.
 
 Return ONLY the JSON array.
 """
