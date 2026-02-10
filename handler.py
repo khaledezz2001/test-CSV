@@ -43,19 +43,17 @@ log("Qwen 7B loaded")
 # ===============================
 # OCR
 # ===============================
-ocr = PaddleOCR(use_angle_cls=True, lang="en", rec=False)
+ocr = PaddleOCR(use_angle_cls=True, lang="en", rec=False, show_log=False)
 DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
 
 def pdf_to_lines(pdf_bytes):
     images = convert_from_bytes(pdf_bytes, dpi=300)
     lines = []
 
-    for page_idx, img in enumerate(images):
+    for img in images:
         img_np = np.array(img)
-
         result = ocr.ocr(img_np, cls=True)
 
-        # 🔑 SAFETY: skip empty / failed OCR pages
         if not result:
             continue
 
@@ -86,6 +84,16 @@ def build_rows(lines):
         rows.append(" ".join(current))
     return rows
 
+# ===============================
+# DESCRIPTION NORMALIZATION
+# ===============================
+def normalize_description(desc):
+    desc = re.sub(r"\bfor\s+[A-Za-z]+\s+\d{4}\b", "", desc, flags=re.I)
+    desc = re.sub(r"\b[A-Za-z]+\s+\d{4}\b", "", desc)
+    return " ".join(desc.split()).strip()
+
+FEE_KEYWORDS = ["fee", "fees", "maintenance", "charge", "commission"]
+
 SYSTEM_PROMPT = """
 You are a financial transaction extraction engine.
 
@@ -114,27 +122,17 @@ STRICT RULES (NO EXCEPTIONS):
 
 3. Debit / credit determination:
    - Fees, charges, commissions, maintenance costs → ALWAYS debit
-   - If the description contains words like:
-     "Fee", "Fees", "Charge", "Maintenance", "Commission"
-     then debit MUST be used and credit MUST be null.
-   - Do NOT infer credit unless the text explicitly indicates incoming funds.
+   - Do NOT infer credit unless explicitly incoming funds.
 
 4. Use absolute numeric values only.
 
 5. Description normalization:
-   - Remove any month or year references from descriptions
-   - Remove billing periods like "For June 2025", "December 2022"
-   - Keep only the transaction name.
+   - Remove billing periods (months / years)
+   - Keep only transaction name.
 
-6. Date:
-   - Use the transaction date column ONLY.
-   - Do not infer or override dates.
+6. Use transaction date column ONLY.
 
-7. Balance:
-   - Use the balance shown for that row.
-   - Do not calculate balances.
-
-Return ONLY the JSON array.
+7. Do NOT calculate balances.
 """
 
 def llm_extract(rows):
@@ -181,8 +179,28 @@ def handler(event):
     raw = llm_extract(rows)
 
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except Exception:
         return {"raw_output": raw}
+
+    # ===============================
+    # POST-PROCESSING (DETERMINISTIC)
+    # ===============================
+
+    for tx in parsed:
+        # Normalize description
+        tx["description"] = normalize_description(tx["description"])
+
+        # Safety net: fees are always debit
+        desc = tx["description"].lower()
+        if any(k in desc for k in FEE_KEYWORDS):
+            if tx["debit"] is None and tx["credit"] is not None:
+                tx["debit"] = tx["credit"]
+                tx["credit"] = None
+
+    # Force chronological order
+    parsed.sort(key=lambda x: x["date"])
+
+    return parsed
 
 runpod.serverless.start({"handler": handler})
