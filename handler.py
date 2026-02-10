@@ -72,9 +72,16 @@ def build_rows(lines):
     return rows
 
 SYSTEM_PROMPT = """
-Return ONLY a JSON array of transactions.
+You are a financial transaction extraction engine.
 
-Format:
+Your task is to extract bank transactions from OCR text.
+
+Return ONLY a valid JSON array.
+DO NOT use Markdown.
+DO NOT wrap the output in ```json or ``` blocks.
+DO NOT include explanations, comments, or extra text.
+
+Each transaction object MUST have exactly this schema:
 {
   "date": "YYYY-MM-DD",
   "description": string,
@@ -83,11 +90,45 @@ Format:
   "balance": number | null
 }
 
-Rules:
-- Negative → debit
-- Positive → credit
-- Absolute values
-- No explanations
+STRICT RULES (MANDATORY):
+
+1. Ignore and DO NOT output any rows that represent:
+   - Balance brought forward
+   - Opening balance
+   - Closing balance
+   - Carried forward
+   - Totals or summaries
+
+2. The transaction DATE column is authoritative.
+   - The date defines the year and month.
+   - NEVER infer or override the date from description text.
+
+3. Description normalization:
+   - Remove billing period phrases such as:
+     "For June 2025", "For December 2024", "January 2024", etc.
+   - Remove months and years from descriptions.
+   - Keep only the transaction name, for example:
+     "IBU-Low Activity Fees"
+     "IBU-Maintenance Fees"
+
+4. Debit and credit rules:
+   - Negative amounts → debit
+   - Positive amounts → credit
+   - Use absolute numeric values
+   - Exactly ONE of debit or credit must be non-null
+
+5. Balance:
+   - Use the running balance shown for that row if present
+   - Do NOT calculate or infer balances
+   - If missing, set balance to null
+
+6. Data integrity:
+   - Do NOT invent transactions
+   - Do NOT merge rows
+   - Do NOT reorder rows
+   - Preserve original statement order
+
+Return ONLY the JSON array.
 """
 
 def llm_extract(rows):
