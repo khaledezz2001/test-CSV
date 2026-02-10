@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
 # Python deps
 COPY requirements.txt /requirements.txt
 RUN pip install --upgrade pip && pip install --no-cache-dir -r /requirements.txt
+RUN pip install flash-attn --no-build-isolation
 
 # ===============================
 # DOWNLOAD QWEN 2.5 7B (SAFE SIZE)
