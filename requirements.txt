@@ -1,19 +1,17 @@
 # =========================
 # System / Utils
 # =========================
-runpod==1.6.2
-pdf2image==1.17.0
-pillow==10.2.0
-numpy==1.26.4
-huggingface_hub==0.23.0
+runpod
+pdf2image
+pillow
+numpy
+huggingface_hub
 
 # =========================
 # LLM + VLM Dependencies
 # =========================
-# Qwen2-VL requires recent transformers and qwen-vl-utils
-torch==2.4.0
-torchvision==0.19.0
-transformers==4.45.0
-accelerate==0.34.0
-qwen-vl-utils==0.0.8
-flash-attn==2.6.3
+# Reliance on system torch/torchvision (from base image)
+transformers
+accelerate
+qwen-vl-utils
+flash-attn--no-build-isolation
