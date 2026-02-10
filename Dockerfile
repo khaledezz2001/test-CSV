@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     libgl1 \
     git \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Python deps
 COPY requirements.txt /requirements.txt
@@ -27,7 +27,7 @@ from huggingface_hub import snapshot_download
 print("Downloading Qwen 2.5 7B...", flush=True)
 
 snapshot_download(
-    repo_id="Qwen/Qwen2.5-7B-Instruct",
+    repo_id="Qwen/Qwen2-VL-7B-Instruct",
     local_dir="/models/qwen",
     local_dir_use_symlinks=False,
     resume_download=True
