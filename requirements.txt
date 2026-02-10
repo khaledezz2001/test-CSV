@@ -1,18 +1,19 @@
 # =========================
-# OCR (Python 3.11 SAFE)
+# System / Utils
 # =========================
-paddlepaddle==2.6.2
-paddleocr==2.8.0
-numpy==1.26.4
+runpod==1.6.2
 pdf2image==1.17.0
 pillow==10.2.0
+numpy==1.26.4
+huggingface_hub==0.23.0
 
 # =========================
-# LLM + Runtime
+# LLM + VLM Dependencies
 # =========================
+# Qwen2-VL requires recent transformers and qwen-vl-utils
 torch==2.4.0
-transformers==4.39.3
-accelerate==0.26.1
-sentencepiece==0.1.99
-huggingface_hub==0.20.3
-runpod==1.6.2
+torchvision==0.19.0
+transformers==4.45.0
+accelerate==0.34.0
+qwen-vl-utils==0.0.8
+flash-attn==2.6.3
