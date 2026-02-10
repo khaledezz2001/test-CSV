@@ -3,6 +3,7 @@ import torch
 import re
 import json
 import base64
+import numpy as np
 from pdf2image import convert_from_bytes
 from paddleocr import PaddleOCR
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -49,7 +50,7 @@ def pdf_to_lines(pdf_bytes):
     images = convert_from_bytes(pdf_bytes, dpi=300)
     lines = []
     for img in images:
-        result = ocr.ocr(img, cls=True)
+        result = ocr.ocr(np.array(img), cls=True)
         for block in result:
             for line in block:
                 txt = line[1][0].strip()
