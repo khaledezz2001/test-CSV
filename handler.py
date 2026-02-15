@@ -44,6 +44,8 @@ Output Format:
   {
     "date": "YYYY-MM-DD",
     "description": "Transaction description",
+    "reference": "TXN-123456",
+    "currency": "USD",  # Detected from the statement (e.g. USD, EUR, GBP, etc.)
     "debit": 100.00,   # Use number for debit/withdrawal (positive value), or null
     "credit": null,    # Use number for credit/deposit, or null
     "balance": 5000.00 # Running balance if available
@@ -56,6 +58,8 @@ Rules:
 3. Keep descriptions exactly as they appear.
 4. Ensure numbers are floats (no currency symbols).
 5. Detect the year from the statement context if not explicitly in the row.
+6. "reference" is the structured identifier assigned by the bank or the counterparty (e.g. cheque number, transfer reference, transaction ID). If not available, use null.
+7. "currency" is the currency of the transaction as shown on the statement (e.g. USD, EUR, GBP, SAR, AED, etc.). Detect it from the statement context.
 """
 
 def process_batch(images):
