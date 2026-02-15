@@ -178,6 +178,34 @@ def process_pdf(pdf_bytes):
             continue
             
         final_transactions.append(t)
+    
+    # ---- Post-processing: validate debit/credit using balance changes ----
+    for i in range(1, len(final_transactions)):
+        prev_balance = final_transactions[i - 1].get("balance")
+        curr_balance = final_transactions[i].get("balance")
+        credit = final_transactions[i].get("credit")
+        debit = final_transactions[i].get("debit")
+        
+        if prev_balance is None or curr_balance is None:
+            continue
+        
+        balance_diff = curr_balance - prev_balance  # positive = increase, negative = decrease
+        
+        # If balance decreased, the transaction should be a debit
+        if balance_diff < 0:
+            amount = debit or credit  # whichever is not null
+            if amount is not None and credit is not None and debit is None:
+                log(f"Correcting transaction {i}: credit -> debit (balance decreased by {abs(balance_diff):.2f})")
+                final_transactions[i]["debit"] = credit
+                final_transactions[i]["credit"] = None
+        
+        # If balance increased, the transaction should be a credit
+        elif balance_diff > 0:
+            amount = credit or debit  # whichever is not null
+            if amount is not None and debit is not None and credit is None:
+                log(f"Correcting transaction {i}: debit -> credit (balance increased by {balance_diff:.2f})")
+                final_transactions[i]["credit"] = debit
+                final_transactions[i]["debit"] = None
             
     return final_transactions
 
