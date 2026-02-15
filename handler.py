@@ -4,6 +4,8 @@ import json
 import base64
 import io
 import gc
+import re
+from datetime import datetime
 from pdf2image import convert_from_bytes
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
@@ -55,11 +57,20 @@ Output Format:
 Rules:
 1. Extract every single transaction row.
 2. If a value is missing, use null.
-3. Ensure numbers are floats (no currency symbols or thousand separators).
-4. Detect the year from the statement context if not explicitly in the row.
-5. CAREFULLY check the column headers (e.g. "Debits" vs "Credits") to determine whether an amount is a debit or credit. Do NOT guess — look at which column the number appears under.
-6. "reference" is the structured identifier found in the transaction details. It includes voucher numbers (e.g. "VN 1628315"), transaction codes (e.g. "U5777201"), cheque numbers, transfer references, or any alphanumeric code that uniquely identifies the transaction. Extract it SEPARATELY from the description. If no reference is found, use null.
-7. "description" should contain only the transaction type/name (e.g. "DIVIDEND", "INTEREST", "MUTUAL FUNDS"). Do NOT include reference numbers or account codes in the description.
+3. Ensure numbers are floats (no currency symbols or thousand separators). Use absolute values (always positive).
+4. Date format: ALWAYS output dates as YYYY-MM-DD. IMPORTANT: Bank statements often use DD/MM/YYYY format (day first, then month). For example, 01/07/2025 means July 1st 2025 (2025-07-01), NOT January 7th. Pay attention to the date range shown at the top of the statement to determine the correct format.
+5. CAREFULLY check the column headers to determine whether an amount is a debit or credit:
+   - If there are separate "Debits" and "Credits" columns, look at which column the number appears under.
+   - If there is a single "Amount" column, negative values (with a minus sign) are DEBITS and positive values are CREDITS.
+   - Fees, charges, and withdrawals are always DEBITS.
+6. "reference" is the structured identifier found in the transaction details. It includes:
+   - Voucher numbers (e.g. "VN 1628315")
+   - Transaction codes (e.g. "U5777201", "DK0", "D34")
+   - Txn Code / Transaction Code fields
+   - Cheque numbers, transfer references
+   - Any alphanumeric code that identifies the transaction
+   Extract the reference SEPARATELY from the description. If no reference is found, use null.
+7. "description" should contain the transaction type/name and any meaningful details (e.g. "IBU-Low Activity Fees For June 2025", "DIVIDEND", "INTEREST"). Do NOT include reference codes, branch codes, or account numbers in the description.
 8. "currency" is the currency of the account as shown on the statement header or transaction details (e.g. USD, EUR, GBP, SAR, AED, CHF). Detect it from the statement context.
 """
 
@@ -179,6 +190,28 @@ def process_pdf(pdf_bytes):
             
         final_transactions.append(t)
     
+    # ---- Post-processing: normalize dates (fix DD/MM vs MM/DD ambiguity) ----
+    for t in final_transactions:
+        date_str = t.get("date", "")
+        if date_str:
+            # Try to detect and fix swapped month/day
+            try:
+                parts = date_str.split("-")
+                if len(parts) == 3:
+                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                    # If month > 12, it's likely day and month are swapped
+                    if month > 12 and day <= 12:
+                        log(f"Fixing swapped date: {date_str} -> {year}-{day:02d}-{month:02d}")
+                        t["date"] = f"{year}-{day:02d}-{month:02d}"
+            except (ValueError, IndexError):
+                pass
+    
+    # ---- Post-processing: sort by date (chronological) for balance validation ----
+    try:
+        final_transactions.sort(key=lambda t: t.get("date", "0000-00-00"))
+    except Exception:
+        pass
+    
     # ---- Post-processing: validate debit/credit using balance changes ----
     for i in range(1, len(final_transactions)):
         prev_balance = final_transactions[i - 1].get("balance")
@@ -193,16 +226,14 @@ def process_pdf(pdf_bytes):
         
         # If balance decreased, the transaction should be a debit
         if balance_diff < 0:
-            amount = debit or credit  # whichever is not null
-            if amount is not None and credit is not None and debit is None:
+            if credit is not None and debit is None:
                 log(f"Correcting transaction {i}: credit -> debit (balance decreased by {abs(balance_diff):.2f})")
                 final_transactions[i]["debit"] = credit
                 final_transactions[i]["credit"] = None
         
         # If balance increased, the transaction should be a credit
         elif balance_diff > 0:
-            amount = credit or debit  # whichever is not null
-            if amount is not None and debit is not None and credit is None:
+            if debit is not None and credit is None:
                 log(f"Correcting transaction {i}: debit -> credit (balance increased by {balance_diff:.2f})")
                 final_transactions[i]["credit"] = debit
                 final_transactions[i]["debit"] = None
