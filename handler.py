@@ -43,23 +43,24 @@ Output Format:
 [
   {
     "date": "YYYY-MM-DD",
-    "description": "Transaction description",
-    "reference": "TXN-123456",
-    "currency": "USD",  # Detected from the statement (e.g. USD, EUR, GBP, etc.)
-    "debit": 100.00,   # Use number for debit/withdrawal (positive value), or null
-    "credit": null,    # Use number for credit/deposit, or null
-    "balance": 5000.00 # Running balance if available
+    "description": "DIVIDEND",
+    "reference": "VN 1628315",
+    "currency": "USD",
+    "debit": null,
+    "credit": 1495.80,
+    "balance": 514894.75
   }
 ]
 
 Rules:
 1. Extract every single transaction row.
 2. If a value is missing, use null.
-3. Keep descriptions exactly as they appear.
-4. Ensure numbers are floats (no currency symbols).
-5. Detect the year from the statement context if not explicitly in the row.
-6. "reference" is the structured identifier assigned by the bank or the counterparty (e.g. cheque number, transfer reference, transaction ID). If not available, use null.
-7. "currency" is the currency of the transaction as shown on the statement (e.g. USD, EUR, GBP, SAR, AED, etc.). Detect it from the statement context.
+3. Ensure numbers are floats (no currency symbols or thousand separators).
+4. Detect the year from the statement context if not explicitly in the row.
+5. CAREFULLY check the column headers (e.g. "Debits" vs "Credits") to determine whether an amount is a debit or credit. Do NOT guess — look at which column the number appears under.
+6. "reference" is the structured identifier found in the transaction details. It includes voucher numbers (e.g. "VN 1628315"), transaction codes (e.g. "U5777201"), cheque numbers, transfer references, or any alphanumeric code that uniquely identifies the transaction. Extract it SEPARATELY from the description. If no reference is found, use null.
+7. "description" should contain only the transaction type/name (e.g. "DIVIDEND", "INTEREST", "MUTUAL FUNDS"). Do NOT include reference numbers or account codes in the description.
+8. "currency" is the currency of the account as shown on the statement header or transaction details (e.g. USD, EUR, GBP, SAR, AED, CHF). Detect it from the statement context.
 """
 
 def process_batch(images):
