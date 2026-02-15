@@ -173,7 +173,7 @@ def process_pdf(pdf_bytes):
         debit = t.get("debit")
         
         # Check if it's a ghost record
-        if (balance == 0 or balance == 0.0) and credit is None and debit is None:
+        if ((balance == 0 or balance == 0.0) and credit is None and debit is None) or (credit is None and debit is None):
             continue
             
         final_transactions.append(t)
