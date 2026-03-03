@@ -7,8 +7,7 @@ import gc
 import re
 from datetime import datetime
 from pdf2image import convert_from_bytes
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
+from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from PIL import Image
 
 def log(msg):
@@ -20,16 +19,16 @@ def log(msg):
 MODEL_PATH = "/models/qwen"
 BATCH_SIZE = 1  # Process 1 page at a time to save VRAM
 
-log("Loading Qwen2-VL-7B...")
+log("Loading Qwen3-VL-8B-Instruct...")
 
 try:
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.float16,
         device_map="auto",
     )
     processor = AutoProcessor.from_pretrained(MODEL_PATH)
-    log("Qwen2-VL loaded successfully.")
+    log("Qwen3-VL loaded successfully.")
 except Exception as e:
     log(f"CRITICAL ERROR loading model: {str(e)}")
     raise e
@@ -48,24 +47,22 @@ Example 1 (separate Debits/Credits columns):
   {
     "date": "2014-05-15",
     "description": "DIVIDEND",
-    "reference": "VN 1628315",
-    "currency": "USD",
     "debit": null,
     "credit": 1495.80,
-    "balance": 514894.75
+    "balance": 514894.75,
+    "currency": "USD"
   }
 ]
 
-Example 2 (single Amount column with negative values, Txn Code column):
+Example 2 (single Amount column with negative values):
 [
   {
     "date": "2025-07-01",
     "description": "IBU-Low Activity Fees For June 2025",
-    "reference": "DK0",
-    "currency": "USD",
     "debit": 23.46,
     "credit": null,
-    "balance": 5105.29
+    "balance": 5105.29,
+    "currency": "USD"
   }
 ]
 
@@ -78,14 +75,9 @@ Rules:
    - If there are separate "Debits" and "Credits" columns, look at which column the number appears under.
    - If there is a single "Amount" column, negative values (with a minus sign) are DEBITS and positive values are CREDITS.
    - Fees, charges, and withdrawals are always DEBITS.
-6. "reference" MUST be extracted from the transaction row. Look for ANY of these:
-   - A "Txn Code" or "Transaction Code" column value (e.g. "DK0", "D34", "TRF")
-   - Voucher numbers (e.g. "VN 1628315")
-   - Transaction IDs (e.g. "U5777201")
-   - Cheque numbers, transfer references
-   These are typically short alphanumeric codes in their own column or embedded in the transaction line. Extract them SEPARATELY from the description—do NOT leave them null if they exist in the row.
-7. "description" should contain the transaction type/name and any meaningful details. Do NOT include reference codes, branch codes, or account numbers in the description.
-8. "currency" is the currency of the account as shown on the statement header or transaction details (e.g. USD, EUR, GBP, SAR, AED, CHF). Detect it from the statement context.
+6. "description" should contain the transaction type/name and any meaningful details (including any reference codes, voucher numbers, or transaction IDs found in the row).
+7. "currency" is the currency of the account as shown on the statement header or transaction details (e.g. USD, EUR, GBP, SAR, AED, CHF). Detect it from the statement context.
+8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
 """
 
 def process_batch(images):
@@ -114,17 +106,11 @@ def process_batch(images):
     ]
 
     try:
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        
-        image_inputs, video_inputs = process_vision_info(messages)
-        
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
             return_tensors="pt",
         )
         
@@ -133,9 +119,9 @@ def process_batch(images):
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=2048, # Reduce max tokens per batch slightly
-                do_sample=False, 
-                temperature=0.1 
+                max_new_tokens=2048,
+                do_sample=False,
+                temperature=0.1
             )
 
         generated_ids_trimmed = [
@@ -147,7 +133,7 @@ def process_batch(images):
         )[0]
         
         # Cleanup VRAM explicitly after each batch
-        del inputs, generated_ids, generated_ids_trimmed, image_inputs
+        del inputs, generated_ids, generated_ids_trimmed
         torch.cuda.empty_cache()
         gc.collect()
         
@@ -201,8 +187,17 @@ def process_pdf(pdf_bytes):
         # Check if it's a ghost record
         if ((balance == 0 or balance == 0.0) and credit is None and debit is None) or (credit is None and debit is None) or (credit ==0 and debit ==0 ):
             continue
-            
-        final_transactions.append(t)
+        
+        # Keep only the 6 required fields
+        cleaned_t = {
+            "date": t.get("date", ""),
+            "description": t.get("description", ""),
+            "debit": t.get("debit"),
+            "credit": t.get("credit"),
+            "balance": t.get("balance"),
+            "currency": t.get("currency", "")
+        }
+        final_transactions.append(cleaned_t)
     
     # ---- Post-processing: normalize dates (fix DD/MM vs MM/DD ambiguity) ----
     for t in final_transactions:
