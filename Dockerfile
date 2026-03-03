@@ -1,4 +1,4 @@
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -20,21 +20,21 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r /requirements.txt
 RUN pip install flash-attn --no-build-isolation
 
 # ===============================
-# DOWNLOAD QWEN 2.5 7B (SAFE SIZE)
+# DOWNLOAD QWEN3-VL-8B-Instruct
 # ===============================
 RUN python3 -u <<'EOF'
 from huggingface_hub import snapshot_download
 
-print("Downloading Qwen 2.5 7B...", flush=True)
+print("Downloading Qwen3-VL-8B-Instruct...", flush=True)
 
 snapshot_download(
-    repo_id="Qwen/Qwen2-VL-7B-Instruct",
+    repo_id="Qwen/Qwen3-VL-8B-Instruct",
     local_dir="/models/qwen",
     local_dir_use_symlinks=False,
     resume_download=True
 )
 
-print("Qwen 7B download complete", flush=True)
+print("Qwen3-VL-8B download complete", flush=True)
 EOF
 
 WORKDIR /app
