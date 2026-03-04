@@ -167,15 +167,38 @@ def process_pdf(pdf_bytes):
         
         # Parse each batch result
         try:
-            cleaned = raw_output.replace("```json", "").replace("```", "").strip()
+            cleaned = raw_output
+            
+            # 1. Remove <think>...</think> blocks (Qwen3 thinking mode)
+            cleaned = re.sub(r'<think>.*?</think>', '', cleaned, flags=re.DOTALL)
+            
+            # 2. Remove markdown code fences
+            cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+            
+            # 3. Try direct parse first
             batch_data = json.loads(cleaned)
             if isinstance(batch_data, list):
                 all_transactions.extend(batch_data)
             else:
                  log(f"Warning: Batch returned non-list JSON: {batch_data}")
         except json.JSONDecodeError:
-            log(f"Failed to parse JSON for batch {i}. Skipping.")
-            log(f"Raw output: {raw_output[:200]}...")
+            # 4. Fallback: try to extract JSON array using regex
+            log(f"Direct JSON parse failed. Attempting regex extraction...")
+            json_match = re.search(r'\[.*\]', raw_output, flags=re.DOTALL)
+            if json_match:
+                try:
+                    batch_data = json.loads(json_match.group())
+                    if isinstance(batch_data, list):
+                        all_transactions.extend(batch_data)
+                        log(f"Regex extraction succeeded: {len(batch_data)} transactions.")
+                    else:
+                        log(f"Warning: Regex-extracted JSON is not a list.")
+                except json.JSONDecodeError:
+                    log(f"Failed to parse JSON for batch {i} even with regex fallback. Skipping.")
+                    log(f"Raw output: {raw_output[:500]}...")
+            else:
+                log(f"Failed to parse JSON for batch {i}. No JSON array found. Skipping.")
+                log(f"Raw output: {raw_output[:500]}...")
             
     # Filter out ghost transactions (balance=0, credit=null, debit=null)
     final_transactions = []
