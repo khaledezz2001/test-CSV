@@ -78,6 +78,7 @@ Rules:
 6. "description" should contain the transaction type/name and any meaningful details (including any reference codes, voucher numbers, or transaction IDs found in the row).
 7. "currency" is the currency of the account as shown on the statement header or transaction details (e.g. USD, EUR, GBP, SAR, AED, CHF). Detect it from the statement context.
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
+9. CRITICAL WARNING: Do NOT extract bank account numbers, IBANs, BIKs, or long IDs (e.g. 40702810...) as a `debit` or `credit` amount. `debit` and `credit` must ONLY be the actual transaction or transfer amounts found in the amount columns (e.g., "Сумма по дебету", "Сумма по кредиту", "Debit", "Credit", "Amount" - typically values like 100.50, 4700.08). Long strings of digits are NEVER amounts.
 """
 
 def repair_truncated_json(text):
@@ -146,7 +147,7 @@ def process_batch(images):
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=4096,
+                max_new_tokens=8192,
                 do_sample=False,
             )
 
