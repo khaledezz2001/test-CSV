@@ -146,7 +146,7 @@ def process_batch(images):
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=8192,
+                max_new_tokens=4096,
                 do_sample=False,
             )
 
