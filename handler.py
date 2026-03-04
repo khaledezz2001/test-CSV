@@ -255,6 +255,16 @@ def process_pdf(pdf_bytes):
             "balance": t.get("balance"),
             "currency": t.get("currency", "")
         }
+        
+        # Post-processing fix: prevent 20-digit bank account numbers from being parsed as amounts
+        # Ex: "debit": 4.07028102000001e+29
+        if cleaned_t["debit"] is not None and cleaned_t["debit"] > 1e12:
+            log(f"Warning: Discovered abnormally large debit ({cleaned_t['debit']}). Likely an account number. Nullifying.")
+            cleaned_t["debit"] = None
+        if cleaned_t["credit"] is not None and cleaned_t["credit"] > 1e12:
+            log(f"Warning: Discovered abnormally large credit ({cleaned_t['credit']}). Likely an account number. Nullifying.")
+            cleaned_t["credit"] = None
+            
         final_transactions.append(cleaned_t)
     
     # ---- Post-processing: normalize dates (fix DD/MM vs MM/DD ambiguity) ----
@@ -289,22 +299,27 @@ def process_pdf(pdf_bytes):
         if prev_balance is None or curr_balance is None:
             continue
         
-        balance_diff = curr_balance - prev_balance  # positive = increase, negative = decrease
+        # Calculate the exact difference
+        # We round to 2 decimals to avoid floating point precision issues (e.g. 10.00000000001)
+        balance_diff = round(curr_balance - prev_balance, 2)  # positive = increase, negative = decrease
         
-        # If balance decreased, the transaction should be a debit
+        # If balance decreased, it MUST be a debit.
         if balance_diff < 0:
-            if credit is not None and debit is None:
-                log(f"Correcting transaction {i}: credit -> debit (balance decreased by {abs(balance_diff):.2f})")
-                final_transactions[i]["debit"] = credit
+            expected_debit = abs(balance_diff)
+            # If the model put the number in credit by mistake, or missed it entirely
+            if debit != expected_debit:
+                log(f"Correcting transaction {i}: setting debit to {expected_debit} (balance decreased)")
+                final_transactions[i]["debit"] = expected_debit
                 final_transactions[i]["credit"] = None
-        
-        # If balance increased, the transaction should be a credit
+                
+        # If balance increased, it MUST be a credit.
         elif balance_diff > 0:
-            if debit is not None and credit is None:
-                log(f"Correcting transaction {i}: debit -> credit (balance increased by {balance_diff:.2f})")
-                final_transactions[i]["credit"] = debit
+            expected_credit = balance_diff
+            # If the model put the number in debit by mistake, or missed it entirely
+            if credit != expected_credit:
+                log(f"Correcting transaction {i}: setting credit to {expected_credit} (balance increased)")
+                final_transactions[i]["credit"] = expected_credit
                 final_transactions[i]["debit"] = None
-            
     return final_transactions
 
 # ===============================
