@@ -168,37 +168,37 @@ def process_pdf(pdf_bytes):
         # Parse each batch result
         try:
             cleaned = raw_output
-            
-            # 1. Remove <think>...</think> blocks (Qwen3 thinking mode)
-            cleaned = re.sub(r'<think>.*?</think>', '', cleaned, flags=re.DOTALL)
-            
-            # 2. Remove markdown code fences
+
+            # Strip Qwen3 <think>...</think> block if present
+            think_match = re.search(r'</think>\s*', cleaned)
+            if think_match:
+                cleaned = cleaned[think_match.end():]
+
+            # Strip markdown code fences
             cleaned = cleaned.replace("```json", "").replace("```", "").strip()
-            
-            # 3. Try direct parse first
-            batch_data = json.loads(cleaned)
-            if isinstance(batch_data, list):
-                all_transactions.extend(batch_data)
-            else:
-                 log(f"Warning: Batch returned non-list JSON: {batch_data}")
-        except json.JSONDecodeError:
-            # 4. Fallback: try to extract JSON array using regex
-            log(f"Direct JSON parse failed. Attempting regex extraction...")
-            json_match = re.search(r'\[.*\]', raw_output, flags=re.DOTALL)
-            if json_match:
-                try:
+
+            # Try direct JSON parse first
+            batch_data = None
+            try:
+                batch_data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                # Fallback: extract JSON array using regex
+                json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
+                if json_match:
                     batch_data = json.loads(json_match.group())
-                    if isinstance(batch_data, list):
-                        all_transactions.extend(batch_data)
-                        log(f"Regex extraction succeeded: {len(batch_data)} transactions.")
-                    else:
-                        log(f"Warning: Regex-extracted JSON is not a list.")
-                except json.JSONDecodeError:
-                    log(f"Failed to parse JSON for batch {i} even with regex fallback. Skipping.")
-                    log(f"Raw output: {raw_output[:500]}...")
+
+            if batch_data is not None and isinstance(batch_data, list):
+                all_transactions.extend(batch_data)
+                log(f"Batch {i} parsed successfully: {len(batch_data)} transactions.")
+            elif batch_data is not None:
+                log(f"Warning: Batch returned non-list JSON: {batch_data}")
             else:
-                log(f"Failed to parse JSON for batch {i}. No JSON array found. Skipping.")
-                log(f"Raw output: {raw_output[:500]}...")
+                log(f"Failed to parse JSON for batch {i}. Skipping.")
+                log(f"Raw output (first 500 chars): {raw_output[:500]}")
+                log(f"Cleaned text (first 300 chars): {cleaned[:300]}")
+        except Exception as e:
+            log(f"Failed to parse JSON for batch {i}: {e}. Skipping.")
+            log(f"Raw output (first 500 chars): {raw_output[:500]}")
             
     # Filter out ghost transactions (balance=0, credit=null, debit=null)
     final_transactions = []
