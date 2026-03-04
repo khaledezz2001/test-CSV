@@ -80,6 +80,33 @@ Rules:
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
 """
 
+def repair_truncated_json(text):
+    """Attempt to repair truncated JSON arrays by finding the last complete object."""
+    # Find the start of the array
+    start = text.find('[')
+    if start == -1:
+        return None
+    
+    # Find the last complete object (last occurrence of "}")
+    last_brace = text.rfind('}')
+    if last_brace == -1:
+        return None
+    
+    # Take everything from '[' to the last '}', then close the array
+    truncated = text[start:last_brace + 1].rstrip().rstrip(',')
+    repaired = truncated + '\n]'
+    
+    try:
+        data = json.loads(repaired)
+        if isinstance(data, list):
+            log(f"Repaired truncated JSON: recovered {len(data)} transactions.")
+            return data
+    except json.JSONDecodeError:
+        pass
+    
+    return None
+
+
 def process_batch(images):
     # Prepare Messages for VLM
     content_blocks = []
@@ -119,9 +146,8 @@ def process_batch(images):
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=2048,
+                max_new_tokens=8192,
                 do_sample=False,
-                temperature=0.1
             )
 
         generated_ids_trimmed = [
@@ -182,10 +208,18 @@ def process_pdf(pdf_bytes):
             try:
                 batch_data = json.loads(cleaned)
             except json.JSONDecodeError:
-                # Fallback: extract JSON array using regex
+                # Fallback 1: extract JSON array using regex
                 json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
                 if json_match:
-                    batch_data = json.loads(json_match.group())
+                    try:
+                        batch_data = json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Fallback 2: repair truncated JSON (model ran out of tokens)
+                if batch_data is None:
+                    log("Direct parse failed. Attempting truncated JSON repair...")
+                    batch_data = repair_truncated_json(cleaned)
 
             if batch_data is not None and isinstance(batch_data, list):
                 all_transactions.extend(batch_data)
