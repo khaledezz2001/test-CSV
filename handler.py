@@ -79,21 +79,21 @@ Rules:
 7. "currency" is the currency of the account as shown on the statement header or transaction details (e.g. USD, EUR, GBP, SAR, AED, CHF). Detect it from the statement context.
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
 9. CRITICAL WARNING: Do NOT extract bank account numbers, IBANs, BIKs, or long IDs (e.g. 40702810...) as a `debit` or `credit` amount. `debit` and `credit` must ONLY be the actual transaction or transfer amounts found in the amount columns (e.g., "Сумма по дебету", "Сумма по кредиту", "Debit", "Credit", "Amount" - typically values like 100.50, 4700.08). Long strings of digits are NEVER amounts.
-10. This statement may have TWO amount columns: "Money out" (debits) and "Money in" (credits).
-    A value appearing under "Money out" is ALWAYS a debit. Under "Money in" is ALWAYS a credit.
-    Never swap them.
 """
 
 def repair_truncated_json(text):
     """Attempt to repair truncated JSON arrays by finding the last complete object."""
+    # Find the start of the array
     start = text.find('[')
     if start == -1:
         return None
     
+    # Find the last complete object (last occurrence of "}")
     last_brace = text.rfind('}')
     if last_brace == -1:
         return None
     
+    # Take everything from '[' to the last '}', then close the array
     truncated = text[start:last_brace + 1].rstrip().rstrip(',')
     repaired = truncated + '\n]'
     
@@ -109,6 +109,7 @@ def repair_truncated_json(text):
 
 
 def process_batch(images):
+    # Prepare Messages for VLM
     content_blocks = []
     
     for img in images:
@@ -158,6 +159,7 @@ def process_batch(images):
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
         
+        # Cleanup VRAM explicitly after each batch
         del inputs, generated_ids, generated_ids_trimmed
         torch.cuda.empty_cache()
         gc.collect()
@@ -190,6 +192,7 @@ def process_pdf(pdf_bytes):
         
         raw_output = process_batch(batch)
         
+        # Parse each batch result
         try:
             cleaned = raw_output
 
@@ -201,10 +204,12 @@ def process_pdf(pdf_bytes):
             # Strip markdown code fences
             cleaned = cleaned.replace("```json", "").replace("```", "").strip()
 
+            # Try direct JSON parse first
             batch_data = None
             try:
                 batch_data = json.loads(cleaned)
             except json.JSONDecodeError:
+                # Fallback 1: extract JSON array using regex
                 json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
                 if json_match:
                     try:
@@ -212,6 +217,7 @@ def process_pdf(pdf_bytes):
                     except json.JSONDecodeError:
                         pass
                 
+                # Fallback 2: repair truncated JSON (model ran out of tokens)
                 if batch_data is None:
                     log("Direct parse failed. Attempting truncated JSON repair...")
                     batch_data = repair_truncated_json(cleaned)
@@ -229,16 +235,18 @@ def process_pdf(pdf_bytes):
             log(f"Failed to parse JSON for batch {i}: {e}. Skipping.")
             log(f"Raw output (first 500 chars): {raw_output[:500]}")
             
-    # Filter out ghost transactions
+    # Filter out ghost transactions (balance=0, credit=null, debit=null)
     final_transactions = []
     for t in all_transactions:
         balance = t.get("balance")
         credit = t.get("credit")
         debit = t.get("debit")
         
-        if ((balance == 0 or balance == 0.0) and credit is None and debit is None) or (credit is None and debit is None) or (credit == 0 and debit == 0):
+        # Check if it's a ghost record
+        if ((balance == 0 or balance == 0.0) and credit is None and debit is None) or (credit is None and debit is None) or (credit ==0 and debit ==0 ):
             continue
         
+        # Keep only the 6 required fields
         cleaned_t = {
             "date": t.get("date", ""),
             "description": t.get("description", ""),
@@ -248,11 +256,13 @@ def process_pdf(pdf_bytes):
             "currency": t.get("currency", "")
         }
         
+        # Post-processing fix: prevent 20-digit bank account numbers from being parsed as amounts
+        # Ex: "debit": 4.07028102000001e+29
         if cleaned_t["debit"] is not None and cleaned_t["debit"] > 1e12:
-            log(f"Warning: Abnormally large debit ({cleaned_t['debit']}). Likely an account number. Nullifying.")
+            log(f"Warning: Discovered abnormally large debit ({cleaned_t['debit']}). Likely an account number. Nullifying.")
             cleaned_t["debit"] = None
         if cleaned_t["credit"] is not None and cleaned_t["credit"] > 1e12:
-            log(f"Warning: Abnormally large credit ({cleaned_t['credit']}). Likely an account number. Nullifying.")
+            log(f"Warning: Discovered abnormally large credit ({cleaned_t['credit']}). Likely an account number. Nullifying.")
             cleaned_t["credit"] = None
             
         final_transactions.append(cleaned_t)
@@ -261,33 +271,24 @@ def process_pdf(pdf_bytes):
     for t in final_transactions:
         date_str = t.get("date", "")
         if date_str:
+            # Try to detect and fix swapped month/day
             try:
                 parts = date_str.split("-")
                 if len(parts) == 3:
                     year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                    # If month > 12, it's likely day and month are swapped
                     if month > 12 and day <= 12:
                         log(f"Fixing swapped date: {date_str} -> {year}-{day:02d}-{month:02d}")
                         t["date"] = f"{year}-{day:02d}-{month:02d}"
             except (ValueError, IndexError):
                 pass
     
-    # ---- Post-processing: sort chronologically, preserving PDF order as tiebreaker ----
-    # The PDF is printed newest-first, so the raw extracted order is newest-first.
-    # We tag each transaction with its original index, then use -index as tiebreaker
-    # so that same-date transactions are reversed back into correct chronological order.
-    for idx, t in enumerate(final_transactions):
-        t["_original_index"] = idx
-
+    # ---- Post-processing: sort by date (chronological) for balance validation ----
     try:
-        final_transactions.sort(
-            key=lambda t: (t.get("date", "0000-00-00"), -t["_original_index"])
-        )
+        final_transactions.sort(key=lambda t: t.get("date", "0000-00-00"))
     except Exception:
         pass
-
-    for t in final_transactions:
-        t.pop("_original_index", None)
-
+    
     # ---- Post-processing: validate debit/credit using balance changes ----
     for i in range(1, len(final_transactions)):
         prev_balance = final_transactions[i - 1].get("balance")
@@ -298,47 +299,27 @@ def process_pdf(pdf_bytes):
         if prev_balance is None or curr_balance is None:
             continue
         
-        balance_diff = round(curr_balance - prev_balance, 2)
-        amount = debit if debit is not None else credit
-
+        # Calculate the exact difference
+        # We round to 2 decimals to avoid floating point precision issues (e.g. 10.00000000001)
+        balance_diff = round(curr_balance - prev_balance, 2)  # positive = increase, negative = decrease
+        
+        # If balance decreased, it MUST be a debit.
         if balance_diff < 0:
-            # Balance decreased → must be a debit
-            expected_debit = round(abs(balance_diff), 2)
-            if credit is not None and debit is None:
-                # Amount is in the wrong field (credit), move it to debit
-                if amount is not None and round(abs(amount - expected_debit), 2) < 0.02:
-                    log(f"Correcting tx {i} [{final_transactions[i]['date']}]: moving credit {credit} → debit (balance decreased by {expected_debit})")
-                    final_transactions[i]["debit"] = expected_debit
-                    final_transactions[i]["credit"] = None
-                elif amount is None:
-                    log(f"Correcting tx {i} [{final_transactions[i]['date']}]: setting missing debit to {expected_debit}")
-                    final_transactions[i]["debit"] = expected_debit
-                    final_transactions[i]["credit"] = None
-            elif debit is not None and round(abs(debit - expected_debit), 2) >= 0.02:
-                # Debit value is wrong, correct it
-                log(f"Correcting tx {i} [{final_transactions[i]['date']}]: debit {debit} → {expected_debit}")
+            expected_debit = abs(balance_diff)
+            # If the model put the number in credit by mistake, or missed it entirely
+            if debit != expected_debit:
+                log(f"Correcting transaction {i}: setting debit to {expected_debit} (balance decreased)")
                 final_transactions[i]["debit"] = expected_debit
-
+                final_transactions[i]["credit"] = None
+                
+        # If balance increased, it MUST be a credit.
         elif balance_diff > 0:
-            # Balance increased → must be a credit
-            expected_credit = round(balance_diff, 2)
-            if debit is not None and credit is None:
-                # Amount is in the wrong field (debit), move it to credit
-                if amount is not None and round(abs(amount - expected_credit), 2) < 0.02:
-                    log(f"Correcting tx {i} [{final_transactions[i]['date']}]: moving debit {debit} → credit (balance increased by {expected_credit})")
-                    final_transactions[i]["credit"] = expected_credit
-                    final_transactions[i]["debit"] = None
-                elif amount is None:
-                    log(f"Correcting tx {i} [{final_transactions[i]['date']}]: setting missing credit to {expected_credit}")
-                    final_transactions[i]["credit"] = expected_credit
-                    final_transactions[i]["debit"] = None
-            elif credit is not None and round(abs(credit - expected_credit), 2) >= 0.02:
-                # Credit value is wrong, correct it
-                log(f"Correcting tx {i} [{final_transactions[i]['date']}]: credit {credit} → {expected_credit}")
+            expected_credit = balance_diff
+            # If the model put the number in debit by mistake, or missed it entirely
+            if credit != expected_credit:
+                log(f"Correcting transaction {i}: setting credit to {expected_credit} (balance increased)")
                 final_transactions[i]["credit"] = expected_credit
-
-        # balance_diff == 0: reversal pair or zero-amount entry, don't touch it
-
+                final_transactions[i]["debit"] = None
     return final_transactions
 
 # ===============================
@@ -361,6 +342,7 @@ def handler(event):
     except Exception as e:
         return {"error": f"Invalid base64: {str(e)}"}
 
+    # Run Inference
     final_data = process_pdf(pdf_bytes)
 
     return final_data
