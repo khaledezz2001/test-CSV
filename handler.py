@@ -7,7 +7,12 @@ import gc
 import re
 from datetime import datetime
 from pdf2image import convert_from_bytes
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+from transformers import AutoProcessor, AutoModelForVision2Seq
+try:
+    from transformers import Qwen3VLMoeForConditionalGeneration
+    ModelClass = Qwen3VLMoeForConditionalGeneration
+except ImportError:
+    ModelClass = AutoModelForVision2Seq
 from PIL import Image
 
 def log(msg):
@@ -22,10 +27,11 @@ BATCH_SIZE = 1  # Process 1 page at a time to save VRAM
 log("Loading Qwen3-VL-30B-A3B-Instruct...")
 
 try:
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
+    model = ModelClass.from_pretrained(
         MODEL_PATH,
-        torch_dtype=torch.float16,
+        torch_dtype="auto",
         device_map="auto",
+        trust_remote_code=True,
     )
     processor = AutoProcessor.from_pretrained(MODEL_PATH)
     log("Qwen3-VL-30B-A3B loaded successfully.")
