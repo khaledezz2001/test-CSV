@@ -19,7 +19,7 @@ def log(msg):
 MODEL_PATH = "/models/qwen"
 BATCH_SIZE = 1  # Process 1 page at a time to save VRAM
 
-log("Loading Qwen3-VL-8B-Instruct...")
+log("Loading Qwen3-VL-30B-A3B-Instruct...")
 
 try:
     model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -28,7 +28,7 @@ try:
         device_map="auto",
     )
     processor = AutoProcessor.from_pretrained(MODEL_PATH)
-    log("Qwen3-VL loaded successfully.")
+    log("Qwen3-VL-30B-A3B loaded successfully.")
 except Exception as e:
     log(f"CRITICAL ERROR loading model: {str(e)}")
     raise e
@@ -78,7 +78,6 @@ Rules:
 6. "description" should contain the transaction type/name and any meaningful details (including any reference codes, voucher numbers, or transaction IDs found in the row).
 7. "currency" is the currency of the account as shown on the statement header or transaction details (e.g. USD, EUR, GBP, SAR, AED, CHF). Detect it from the statement context.
 8. Output ONLY these 6 fields per transaction: date, description, debit, credit, balance, currency. Do NOT include any other fields.
-9. CRITICAL WARNING: Do NOT extract bank account numbers, IBANs, BIKs, or long IDs (e.g. 40702810...) as a `debit` or `credit` amount. `debit` and `credit` must ONLY be the actual transaction or transfer amounts found in the amount columns (e.g., "Сумма по дебету", "Сумма по кредиту", "Debit", "Credit", "Amount" - typically values like 100.50, 4700.08). Long strings of digits are NEVER amounts.
 """
 
 def repair_truncated_json(text):
@@ -147,7 +146,7 @@ def process_batch(images):
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=8192,
+                max_new_tokens=4096,
                 do_sample=False,
             )
 
@@ -255,16 +254,6 @@ def process_pdf(pdf_bytes):
             "balance": t.get("balance"),
             "currency": t.get("currency", "")
         }
-        
-        # Post-processing fix: prevent 20-digit bank account numbers from being parsed as amounts
-        # Ex: "debit": 4.07028102000001e+29
-        if cleaned_t["debit"] is not None and cleaned_t["debit"] > 1e12:
-            log(f"Warning: Discovered abnormally large debit ({cleaned_t['debit']}). Likely an account number. Nullifying.")
-            cleaned_t["debit"] = None
-        if cleaned_t["credit"] is not None and cleaned_t["credit"] > 1e12:
-            log(f"Warning: Discovered abnormally large credit ({cleaned_t['credit']}). Likely an account number. Nullifying.")
-            cleaned_t["credit"] = None
-            
         final_transactions.append(cleaned_t)
     
     # ---- Post-processing: normalize dates (fix DD/MM vs MM/DD ambiguity) ----
@@ -299,27 +288,22 @@ def process_pdf(pdf_bytes):
         if prev_balance is None or curr_balance is None:
             continue
         
-        # Calculate the exact difference
-        # We round to 2 decimals to avoid floating point precision issues (e.g. 10.00000000001)
-        balance_diff = round(curr_balance - prev_balance, 2)  # positive = increase, negative = decrease
+        balance_diff = curr_balance - prev_balance  # positive = increase, negative = decrease
         
-        # If balance decreased, it MUST be a debit.
+        # If balance decreased, the transaction should be a debit
         if balance_diff < 0:
-            expected_debit = abs(balance_diff)
-            # If the model put the number in credit by mistake, or missed it entirely
-            if debit != expected_debit:
-                log(f"Correcting transaction {i}: setting debit to {expected_debit} (balance decreased)")
-                final_transactions[i]["debit"] = expected_debit
+            if credit is not None and debit is None:
+                log(f"Correcting transaction {i}: credit -> debit (balance decreased by {abs(balance_diff):.2f})")
+                final_transactions[i]["debit"] = credit
                 final_transactions[i]["credit"] = None
-                
-        # If balance increased, it MUST be a credit.
+        
+        # If balance increased, the transaction should be a credit
         elif balance_diff > 0:
-            expected_credit = balance_diff
-            # If the model put the number in debit by mistake, or missed it entirely
-            if credit != expected_credit:
-                log(f"Correcting transaction {i}: setting credit to {expected_credit} (balance increased)")
-                final_transactions[i]["credit"] = expected_credit
+            if debit is not None and credit is None:
+                log(f"Correcting transaction {i}: debit -> credit (balance increased by {balance_diff:.2f})")
+                final_transactions[i]["credit"] = debit
                 final_transactions[i]["debit"] = None
+            
     return final_transactions
 
 # ===============================
