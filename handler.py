@@ -33,7 +33,7 @@ try:
         device_map="auto",
         trust_remote_code=True,
     )
-    processor = AutoProcessor.from_pretrained(MODEL_PATH)
+    processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
     log("Qwen3-VL-30B-A3B loaded successfully.")
 except Exception as e:
     log(f"CRITICAL ERROR loading model: {str(e)}")
