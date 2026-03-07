@@ -7,12 +7,12 @@ import gc
 import re
 from datetime import datetime
 from pdf2image import convert_from_bytes
-from transformers import AutoProcessor, AutoModelForVision2Seq
+from transformers import AutoProcessor, AutoModelForCausalLM
 try:
     from transformers import Qwen3VLMoeForConditionalGeneration
     ModelClass = Qwen3VLMoeForConditionalGeneration
 except ImportError:
-    ModelClass = AutoModelForVision2Seq
+    ModelClass = AutoModelForCausalLM
 from PIL import Image
 
 def log(msg):
