@@ -5,16 +5,17 @@ ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/models
 ENV TRANSFORMERS_CACHE=/models
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
-ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+# vLLM recommended settings
+ENV VLLM_ATTENTION_BACKEND=FLASHINFER
 
-# System deps for OCR + PDFs
+# System deps for PDFs
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     libgl1 \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Python deps – install vLLM first (it pins its own torch version)
 COPY requirements.txt /requirements.txt
 RUN pip install --upgrade pip && pip install --no-cache-dir -r /requirements.txt
 RUN pip install flash-attn --no-build-isolation
