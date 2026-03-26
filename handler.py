@@ -1,19 +1,12 @@
 import runpod
-import torch
 import json
 import base64
-import io
-import gc
 import re
+import os
 from datetime import datetime
 from pdf2image import convert_from_bytes
-from transformers import AutoProcessor, AutoModelForCausalLM
-try:
-    from transformers import Qwen3VLMoeForConditionalGeneration
-    ModelClass = Qwen3VLMoeForConditionalGeneration
-except ImportError:
-    ModelClass = AutoModelForCausalLM
 from PIL import Image
+from vllm import LLM, SamplingParams
 
 def log(msg):
     print(f"[LOG] {msg}", flush=True)
@@ -22,19 +15,21 @@ def log(msg):
 # CONFIG & MODEL LOADING
 # ===============================
 MODEL_PATH = "/models/qwen"
-BATCH_SIZE = 1  # Process 1 page at a time to save VRAM
+MAX_PAGES_PER_BATCH = 4  # Number of pages to process in a single vLLM batch
 
-log("Loading Qwen3-VL-30B-A3B-Instruct...")
+log("Loading Qwen3-VL-30B-A3B-Instruct with vLLM...")
 
 try:
-    model = ModelClass.from_pretrained(
-        MODEL_PATH,
-        torch_dtype="auto",
-        device_map="auto",
+    llm = LLM(
+        model=MODEL_PATH,
         trust_remote_code=True,
+        dtype="auto",
+        max_model_len=8192,
+        gpu_memory_utilization=0.90,
+        limit_mm_per_prompt={"image": MAX_PAGES_PER_BATCH},
+        tensor_parallel_size=int(os.environ.get("TENSOR_PARALLEL_SIZE", "1")),
     )
-    processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
-    log("Qwen3-VL-30B-A3B loaded successfully.")
+    log("Qwen3-VL-30B-A3B loaded successfully with vLLM.")
 except Exception as e:
     log(f"CRITICAL ERROR loading model: {str(e)}")
     raise e
@@ -88,17 +83,14 @@ Rules:
 
 def repair_truncated_json(text):
     """Attempt to repair truncated JSON arrays by finding the last complete object."""
-    # Find the start of the array
     start = text.find('[')
     if start == -1:
         return None
     
-    # Find the last complete object (last occurrence of "}")
     last_brace = text.rfind('}')
     if last_brace == -1:
         return None
     
-    # Take everything from '[' to the last '}', then close the array
     truncated = text[start:last_brace + 1].rstrip().rstrip(',')
     repaired = truncated + '\n]'
     
@@ -113,67 +105,117 @@ def repair_truncated_json(text):
     return None
 
 
-def process_batch(images):
-    # Prepare Messages for VLM
-    content_blocks = []
-    
-    for img in images:
-        if max(img.size) > 2000:
-             img.thumbnail((2000, 2000))
-        
-        content_blocks.append({
-            "type": "image",
-            "image": img,
-        })
-    
-    content_blocks.append({
-        "type": "text",
-        "text": SYSTEM_PROMPT
-    })
+def build_prompt_for_page(image):
+    """Build a single vLLM prompt for one page image."""
+    if max(image.size) > 2000:
+        image.thumbnail((2000, 2000))
 
     messages = [
         {
             "role": "user",
-            "content": content_blocks
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": SYSTEM_PROMPT},
+            ],
         }
     ]
+    return messages, image
+
+
+def process_pages_vllm(images):
+    """Process multiple pages in parallel using vLLM's batch inference."""
+    from vllm import SamplingParams
+
+    sampling_params = SamplingParams(
+        max_tokens=4096,
+        temperature=0.0,
+        top_p=1.0,
+    )
+
+    # Prepare all prompts
+    all_messages = []
+    processed_images = []
+
+    for img in images:
+        if max(img.size) > 2000:
+            img.thumbnail((2000, 2000))
+        processed_images.append(img)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img},
+                    {"type": "text", "text": SYSTEM_PROMPT},
+                ],
+            }
+        ]
+        all_messages.append(messages)
 
     try:
-        inputs = processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
+        # vLLM chat interface – batches all prompts together
+        outputs = llm.chat(
+            messages=all_messages,
+            sampling_params=sampling_params,
         )
-        
-        inputs = inputs.to(model.device)
 
-        with torch.no_grad():
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=4096,
-                do_sample=False,
-            )
+        results = []
+        for output in outputs:
+            text = output.outputs[0].text
+            results.append(text)
 
-        generated_ids_trimmed = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        
-        output_text = processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )[0]
-        
-        # Cleanup VRAM explicitly after each batch
-        del inputs, generated_ids, generated_ids_trimmed
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        return output_text
-        
+        return results
+
     except Exception as e:
-        log(f"Batch processing error: {e}")
-        return json.dumps({"error": f"Batch failed: {str(e)}"})
+        log(f"vLLM batch processing error: {e}")
+        return [json.dumps({"error": f"Batch failed: {str(e)}"})] * len(images)
+
+
+def parse_raw_output(raw_output, batch_idx):
+    """Parse raw model output into transaction list."""
+    try:
+        cleaned = raw_output
+
+        # Strip Qwen3 <think>...</think> block if present
+        think_match = re.search(r'</think>\s*', cleaned)
+        if think_match:
+            cleaned = cleaned[think_match.end():]
+
+        # Strip markdown code fences
+        cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
+        # Try direct JSON parse first
+        batch_data = None
+        try:
+            batch_data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Fallback 1: extract JSON array using regex
+            json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
+            if json_match:
+                try:
+                    batch_data = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+            
+            # Fallback 2: repair truncated JSON (model ran out of tokens)
+            if batch_data is None:
+                log("Direct parse failed. Attempting truncated JSON repair...")
+                batch_data = repair_truncated_json(cleaned)
+
+        if batch_data is not None and isinstance(batch_data, list):
+            log(f"Page {batch_idx} parsed successfully: {len(batch_data)} transactions.")
+            return batch_data
+        elif batch_data is not None:
+            log(f"Warning: Page {batch_idx} returned non-list JSON: {batch_data}")
+        else:
+            log(f"Failed to parse JSON for page {batch_idx}. Skipping.")
+            log(f"Raw output (first 500 chars): {raw_output[:500]}")
+            log(f"Cleaned text (first 300 chars): {cleaned[:300]}")
+    except Exception as e:
+        log(f"Failed to parse JSON for page {batch_idx}: {e}. Skipping.")
+        log(f"Raw output (first 500 chars): {raw_output[:500]}")
+    
+    return []
 
 
 def process_pdf(pdf_bytes):
@@ -190,55 +232,21 @@ def process_pdf(pdf_bytes):
 
     all_transactions = []
     
-    # Process in batches
-    for i in range(0, len(images), BATCH_SIZE):
-        batch = images[i:i + BATCH_SIZE]
-        log(f"Processing batch {i//BATCH_SIZE + 1}/{(len(images)+BATCH_SIZE-1)//BATCH_SIZE}...")
+    # Process in batches using vLLM (parallel inference)
+    for i in range(0, len(images), MAX_PAGES_PER_BATCH):
+        batch = images[i:i + MAX_PAGES_PER_BATCH]
+        batch_num = i // MAX_PAGES_PER_BATCH + 1
+        total_batches = (len(images) + MAX_PAGES_PER_BATCH - 1) // MAX_PAGES_PER_BATCH
+        log(f"Processing batch {batch_num}/{total_batches} ({len(batch)} pages)...")
         
-        raw_output = process_batch(batch)
+        # vLLM processes all pages in the batch simultaneously
+        raw_outputs = process_pages_vllm(batch)
         
-        # Parse each batch result
-        try:
-            cleaned = raw_output
-
-            # Strip Qwen3 <think>...</think> block if present
-            think_match = re.search(r'</think>\s*', cleaned)
-            if think_match:
-                cleaned = cleaned[think_match.end():]
-
-            # Strip markdown code fences
-            cleaned = cleaned.replace("```json", "").replace("```", "").strip()
-
-            # Try direct JSON parse first
-            batch_data = None
-            try:
-                batch_data = json.loads(cleaned)
-            except json.JSONDecodeError:
-                # Fallback 1: extract JSON array using regex
-                json_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
-                if json_match:
-                    try:
-                        batch_data = json.loads(json_match.group())
-                    except json.JSONDecodeError:
-                        pass
-                
-                # Fallback 2: repair truncated JSON (model ran out of tokens)
-                if batch_data is None:
-                    log("Direct parse failed. Attempting truncated JSON repair...")
-                    batch_data = repair_truncated_json(cleaned)
-
-            if batch_data is not None and isinstance(batch_data, list):
-                all_transactions.extend(batch_data)
-                log(f"Batch {i} parsed successfully: {len(batch_data)} transactions.")
-            elif batch_data is not None:
-                log(f"Warning: Batch returned non-list JSON: {batch_data}")
-            else:
-                log(f"Failed to parse JSON for batch {i}. Skipping.")
-                log(f"Raw output (first 500 chars): {raw_output[:500]}")
-                log(f"Cleaned text (first 300 chars): {cleaned[:300]}")
-        except Exception as e:
-            log(f"Failed to parse JSON for batch {i}: {e}. Skipping.")
-            log(f"Raw output (first 500 chars): {raw_output[:500]}")
+        # Parse each page's output
+        for j, raw_output in enumerate(raw_outputs):
+            page_idx = i + j
+            page_transactions = parse_raw_output(raw_output, page_idx)
+            all_transactions.extend(page_transactions)
             
     # Filter out ghost transactions (balance=0, credit=null, debit=null)
     final_transactions = []
@@ -248,7 +256,7 @@ def process_pdf(pdf_bytes):
         debit = t.get("debit")
         
         # Check if it's a ghost record
-        if ((balance == 0 or balance == 0.0) and credit is None and debit is None) or (credit is None and debit is None) or (credit ==0 and debit ==0 ):
+        if ((balance == 0 or balance == 0.0) and credit is None and debit is None) or (credit is None and debit is None) or (credit == 0 and debit == 0):
             continue
         
         # Keep only the 6 required fields
@@ -266,12 +274,10 @@ def process_pdf(pdf_bytes):
     for t in final_transactions:
         date_str = t.get("date", "")
         if date_str:
-            # Try to detect and fix swapped month/day
             try:
                 parts = date_str.split("-")
                 if len(parts) == 3:
                     year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-                    # If month > 12, it's likely day and month are swapped
                     if month > 12 and day <= 12:
                         log(f"Fixing swapped date: {date_str} -> {year}-{day:02d}-{month:02d}")
                         t["date"] = f"{year}-{day:02d}-{month:02d}"
@@ -294,16 +300,14 @@ def process_pdf(pdf_bytes):
         if prev_balance is None or curr_balance is None:
             continue
         
-        balance_diff = curr_balance - prev_balance  # positive = increase, negative = decrease
+        balance_diff = curr_balance - prev_balance
         
-        # If balance decreased, the transaction should be a debit
         if balance_diff < 0:
             if credit is not None and debit is None:
                 log(f"Correcting transaction {i}: credit -> debit (balance decreased by {abs(balance_diff):.2f})")
                 final_transactions[i]["debit"] = credit
                 final_transactions[i]["credit"] = None
         
-        # If balance increased, the transaction should be a credit
         elif balance_diff > 0:
             if debit is not None and credit is None:
                 log(f"Correcting transaction {i}: debit -> credit (balance increased by {balance_diff:.2f})")
