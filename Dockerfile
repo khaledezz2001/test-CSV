@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     git \
     && rm -rf /var/lib/apt/lists/*
-
-# Python deps – install vLLM first (it pins its own torch version)
+ 
+#  Python deps – install vLLM first (it pins its own torch version)
 COPY requirements.txt /requirements.txt
 RUN pip install --upgrade pip && pip install --no-cache-dir -r /requirements.txt
 RUN pip install flash-attn --no-build-isolation
