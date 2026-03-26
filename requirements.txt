@@ -8,8 +8,6 @@ numpy
 huggingface_hub
 
 # =========================
-# LLM + VLM Dependencies
+# LLM Inference Engine
 # =========================
-# Reliance on system torch/torchvision (from base image)
-transformers>=4.51.0
-accelerate
+vllm>=0.8.0
